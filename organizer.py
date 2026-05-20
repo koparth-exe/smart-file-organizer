@@ -2,10 +2,7 @@
 """
 Smart File Organizer
 Author: Parth Korgaonkar
-GitHub: Drusus03
-
-Sorts files in a target folder into categorized subfolders.
-Supports one-time sort, real-time --watch mode, --undo, --duplicates, and --stats.
+GitHub: koparth-exe
 """
 
 import os
@@ -18,6 +15,26 @@ import argparse
 import time
 from pathlib import Path
 
+# ── Rich ──────────────────────────────────────────────────────────────────────
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+    from rich.rule import Rule
+    from rich import box
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+
+# ── Pyfiglet ──────────────────────────────────────────────────────────────────
+try:
+    import pyfiglet
+    PYFIGLET_AVAILABLE = True
+except ImportError:
+    PYFIGLET_AVAILABLE = False
+
+# ── Watchdog ──────────────────────────────────────────────────────────────────
 try:
     from watchdog.observers import Observer
     from watchdog.events import FileSystemEventHandler
@@ -28,9 +45,14 @@ except Exception:
         pass
     Observer = None
 
+# ── Global console ────────────────────────────────────────────────────────────
+console = Console() if RICH_AVAILABLE else None
+
+VERSION = "1.0.0"
+AUTHOR  = "Parth Korgaonkar"
+GITHUB  = "github.com/koparth-exe"
 
 # ── Default config ────────────────────────────────────────────────────────────
-
 DEFAULT_CONFIG = {
     "categories": {
         "Images":      [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".webp", ".ico", ".tiff"],
@@ -43,15 +65,72 @@ DEFAULT_CONFIG = {
         "Executables": [".exe", ".msi", ".apk", ".deb", ".rpm", ".dmg"],
         "Misc":        []
     },
-    "ignore": [".DS_Store", "Thumbs.db", "desktop.ini"],
+    "ignore":      [".DS_Store", "Thumbs.db", "desktop.ini"],
     "misc_folder": "Misc",
-    "log_file": "organizer.log"
+    "log_file":    "organizer.log"
 }
 
 SESSION_MARKER = "=== SESSION START ==="
 
 
-# ── Logging setup ─────────────────────────────────────────────────────────────
+# ── Banner ────────────────────────────────────────────────────────────────────
+
+def print_banner():
+    if not RICH_AVAILABLE:
+        print("Smart File Organizer")
+        print(f"By {AUTHOR} | v{VERSION}")
+        return
+
+    if PYFIGLET_AVAILABLE:
+        art = pyfiglet.figlet_format("SFOrganizer", font="small")
+    else:
+        art = (
+            " ____  _____  ___\n"
+            "/ ___||  ___|/ _ \\\n"
+            "\\___ \\| |_  | | | |\n"
+            " ___) |  _| | |_| |\n"
+            "|____/|_|    \\___/\n"
+        )
+
+    content = Text()
+    content.append(art, style="bold green")
+    content.append(f"\n  Smart File Organizer  ", style="bold white")
+    content.append(f"v{VERSION}\n", style="dim")
+    content.append(f"  By {AUTHOR}  ", style="bold cyan")
+    content.append(f"| {GITHUB}", style="dim cyan")
+
+    console.print(Panel(
+        content,
+        box=box.DOUBLE_EDGE,
+        border_style="green",
+        padding=(0, 2)
+    ))
+    console.print()
+
+
+def print_commands():
+    if not RICH_AVAILABLE:
+        return
+
+    t = Table(box=box.SIMPLE, show_header=True, header_style="bold green")
+    t.add_column("Command",     style="cyan",  no_wrap=True)
+    t.add_column("Description", style="white")
+    t.add_column("Example",     style="dim")
+
+    t.add_row("(no flag)",      "Sort folder once",               "python organizer.py ~/Downloads")
+    t.add_row("--watch / -w",   "Watch & auto-sort in real-time", "python organizer.py ~/Downloads --watch")
+    t.add_row("--undo",         "Reverse last sort session",      "python organizer.py ~/Downloads --undo")
+    t.add_row("--stats",        "Show file count per category",   "python organizer.py ~/Downloads --stats")
+    t.add_row("--duplicates",   "Find files with same content",   "python organizer.py ~/Downloads --duplicates")
+    t.add_row("--generate-config", "Create default config.json",  "python organizer.py --generate-config")
+    t.add_row("--config / -c",  "Use custom config file",         "python organizer.py ~/Downloads -c my.json")
+
+    console.print(Panel(t, title="[bold green]Available Commands[/bold green]",
+                        border_style="green", box=box.ROUNDED))
+    console.print()
+
+
+# ── Logging (file only) ───────────────────────────────────────────────────────
 
 def setup_logger(log_path: Path) -> logging.Logger:
     logger = logging.getLogger("FileOrganizer")
@@ -62,9 +141,6 @@ def setup_logger(log_path: Path) -> logging.Logger:
     fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setFormatter(fmt)
     logger.addHandler(fh)
-    ch = logging.StreamHandler(sys.stdout)
-    ch.setFormatter(fmt)
-    logger.addHandler(ch)
     return logger
 
 
@@ -73,7 +149,7 @@ def write_session_marker(log_path: Path) -> None:
         f.write(f"\n{SESSION_MARKER}\n")
 
 
-# ── Config loader ─────────────────────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────────
 
 def load_config(config_path: Path) -> dict:
     if config_path.exists():
@@ -85,7 +161,7 @@ def load_config(config_path: Path) -> dict:
     return DEFAULT_CONFIG.copy()
 
 
-# ── Core: resolve category ────────────────────────────────────────────────────
+# ── Core ──────────────────────────────────────────────────────────────────────
 
 def get_category(file_path: Path, config: dict) -> str:
     ext = file_path.suffix.lower()
@@ -95,12 +171,9 @@ def get_category(file_path: Path, config: dict) -> str:
     return config.get("misc_folder", "Misc")
 
 
-# ── Core: move a single file ──────────────────────────────────────────────────
-
 def move_file(file_path: Path, target_root: Path, config: dict, logger: logging.Logger) -> bool:
     filename = file_path.name
     if filename in config.get("ignore", []):
-        logger.debug(f"Skipped (ignored): {filename}")
         return False
     if file_path.is_dir():
         return False
@@ -113,30 +186,42 @@ def move_file(file_path: Path, target_root: Path, config: dict, logger: logging.
     dest_path = dest_dir / filename
 
     if dest_path.exists():
-        stem = file_path.stem
-        suffix = file_path.suffix
+        stem, suffix = file_path.stem, file_path.suffix
         counter = 1
         while dest_path.exists():
             dest_path = dest_dir / f"{stem}_{counter}{suffix}"
             counter += 1
 
     shutil.move(str(file_path), str(dest_path))
+
+    # File log (for undo)
     logger.info(f"Moved: {filename}  ->  {category}/{dest_path.name}")
+
+    # Console output
+    if RICH_AVAILABLE:
+        console.print(f"  [green]>[/green] [white]{filename}[/white]  [dim]->[/dim]  [cyan]{category}/{dest_path.name}[/cyan]")
+    else:
+        print(f"  > {filename}  ->  {category}/{dest_path.name}")
+
     return True
 
 
-# ── One-time sort ─────────────────────────────────────────────────────────────
+# ── Sort ──────────────────────────────────────────────────────────────────────
 
 def sort_folder(target: Path, config: dict, logger: logging.Logger) -> dict:
     files = [f for f in target.iterdir() if f.is_file()]
     if not files:
-        logger.info("No files to organize.")
+        if RICH_AVAILABLE:
+            console.print("[yellow]  No files to organize.[/yellow]")
+        else:
+            print("  No files to organize.")
         return {}
 
-    moved = 0
-    skipped = 0
-    stats = {}
+    if RICH_AVAILABLE:
+        console.print(Rule("[green]Sorting[/green]", style="green"))
+        console.print()
 
+    moved, skipped, stats = 0, 0, {}
     for f in files:
         cat = get_category(f, config)
         result = move_file(f, target, config, logger)
@@ -146,16 +231,39 @@ def sort_folder(target: Path, config: dict, logger: logging.Logger) -> dict:
         else:
             skipped += 1
 
+    # Summary
+    if RICH_AVAILABLE:
+        console.print()
+        console.print(Rule("[green]Done[/green]", style="green"))
+        console.print()
+
+        t = Table(box=box.SIMPLE, show_header=True, header_style="bold green")
+        t.add_column("Category", style="cyan")
+        t.add_column("Files",    style="white", justify="right")
+
+        for cat, count in sorted(stats.items()):
+            t.add_row(cat, str(count))
+
+        t.add_section()
+        t.add_row("[bold]Total moved[/bold]", f"[bold green]{moved}[/bold green]")
+        t.add_row("[dim]Skipped[/dim]",       f"[dim]{skipped}[/dim]")
+
+        console.print(Panel(t, title="[bold green]Sort Summary[/bold green]",
+                            border_style="green", box=box.ROUNDED))
+    else:
+        print(f"\nDone — {moved} moved, {skipped} skipped.")
+
     logger.info(f"Done — {moved} file(s) moved, {skipped} skipped.")
+    if stats:
+        logger.info("Stats: " + ", ".join(f"{k}: {v}" for k, v in sorted(stats.items())))
+
     return stats
 
 
-# ── Stats mode ────────────────────────────────────────────────────────────────
+# ── Stats ─────────────────────────────────────────────────────────────────────
 
 def show_stats(target: Path) -> None:
-    print(f"\nStats for: {target}\n")
-    total = 0
-    rows = []
+    rows, total = [], 0
 
     for item in sorted(target.iterdir()):
         if item.is_dir():
@@ -164,83 +272,101 @@ def show_stats(target: Path) -> None:
                 rows.append((item.name, count))
                 total += count
 
-    if not rows:
-        print("  No organized subfolders found.")
-        return
+    if RICH_AVAILABLE:
+        if not rows:
+            console.print(Panel("[yellow]No organized subfolders found.[/yellow]",
+                                title="Stats", border_style="yellow"))
+            return
 
-    max_name = max(len(r[0]) for r in rows)
-    max_count = max(r[1] for r in rows)
+        max_count = max(r[1] for r in rows)
+        t = Table(box=box.SIMPLE, show_header=True, header_style="bold green")
+        t.add_column("Category", style="cyan")
+        t.add_column("Bar",      style="green", no_wrap=True)
+        t.add_column("Files",    style="white", justify="right")
 
-    for name, count in rows:
-        bar_len = int((count / max_count) * 30)
-        bar = "#" * bar_len
-        print(f"  {name:<{max_name}}  {bar:<30}  {count} file(s)")
+        for name, count in rows:
+            bar = "█" * int((count / max_count) * 25)
+            t.add_row(name, bar, str(count))
 
-    print(f"\n  Total: {total} file(s) across {len(rows)} categories\n")
+        t.add_section()
+        t.add_row("[bold]Total[/bold]", "", f"[bold green]{total}[/bold green]")
+
+        console.print(Panel(t,
+            title=f"[bold green]Stats — {target}[/bold green]",
+            border_style="green", box=box.ROUNDED))
+    else:
+        print(f"\nStats for: {target}\n")
+        for name, count in rows:
+            print(f"  {name:<15} {count}")
+        print(f"\n  Total: {total}")
 
 
-# ── Undo last session ─────────────────────────────────────────────────────────
+# ── Undo ──────────────────────────────────────────────────────────────────────
 
 def undo_last_session(target: Path, config: dict) -> None:
     log_path = target / config.get("log_file", "organizer.log")
-
     if not log_path.exists():
-        print("[ERROR] No log file found. Nothing to undo.")
+        if RICH_AVAILABLE:
+            console.print(Panel("[red]No log file found. Nothing to undo.[/red]",
+                                border_style="red"))
+        else:
+            print("[ERROR] No log file found.")
         sys.exit(1)
 
     lines = log_path.read_text(encoding="utf-8").splitlines()
-
     last_marker_idx = -1
     for i, line in enumerate(lines):
         if SESSION_MARKER in line:
             last_marker_idx = i
 
     if last_marker_idx == -1:
-        print("[ERROR] No session found in log. Run the organizer at least once first.")
+        if RICH_AVAILABLE:
+            console.print(Panel("[red]No session found. Run the organizer at least once first.[/red]",
+                                border_style="red"))
         sys.exit(1)
 
-    session_lines = lines[last_marker_idx + 1:]
-
     moves = []
-    for line in session_lines:
+    for line in lines[last_marker_idx + 1:]:
         if "INFO" in line and "Moved:" in line and "->" in line:
             try:
                 part = line.split("Moved:")[1].strip()
                 original_name, dest_rel = [x.strip() for x in part.split("->")]
-                moves.append((original_name.strip(), dest_rel.strip()))
+                moves.append((original_name, dest_rel))
             except Exception:
                 continue
 
     if not moves:
-        print("Nothing to undo in the last session.")
+        if RICH_AVAILABLE:
+            console.print("[yellow]Nothing to undo in the last session.[/yellow]")
         return
 
-    print(f"\nUndoing {len(moves)} move(s)...\n")
-    restored = 0
-    failed = 0
+    if RICH_AVAILABLE:
+        console.print(Rule("[cyan]Undoing[/cyan]", style="cyan"))
+        console.print()
 
+    restored, failed = 0, 0
     for original_name, dest_rel in reversed(moves):
         src = target / dest_rel
         dst = target / original_name
 
         if not src.exists():
-            print(f"  [SKIP] Not found: {dest_rel}")
+            if RICH_AVAILABLE:
+                console.print(f"  [yellow]SKIP[/yellow] Not found: {dest_rel}")
             failed += 1
             continue
 
         if dst.exists():
-            stem = Path(original_name).stem
-            suffix = Path(original_name).suffix
+            stem, suffix = Path(original_name).stem, Path(original_name).suffix
             counter = 1
             while dst.exists():
                 dst = target / f"{stem}_restored_{counter}{suffix}"
                 counter += 1
 
         shutil.move(str(src), str(dst))
-        print(f"  Restored: {dest_rel}  ->  {dst.name}")
+        if RICH_AVAILABLE:
+            console.print(f"  [cyan]<[/cyan] [white]{dest_rel}[/white]  [dim]->[/dim]  [green]{dst.name}[/green]")
         restored += 1
 
-    # Clean up empty category folders
     for item in target.iterdir():
         if item.is_dir():
             try:
@@ -248,14 +374,19 @@ def undo_last_session(target: Path, config: dict) -> None:
             except OSError:
                 pass
 
-    # Trim log — remove last session
     new_lines = lines[:last_marker_idx]
     log_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
-    print(f"\nDone — {restored} restored, {failed} skipped.\n")
+    if RICH_AVAILABLE:
+        console.print()
+        console.print(Panel(
+            f"[green]Restored:[/green] {restored} file(s)\n[yellow]Skipped:[/yellow]  {failed} file(s)",
+            title="[bold cyan]Undo Complete[/bold cyan]",
+            border_style="cyan", box=box.ROUNDED
+        ))
 
 
-# ── Duplicate detector ────────────────────────────────────────────────────────
+# ── Duplicates ────────────────────────────────────────────────────────────────
 
 def hash_file(path: Path, chunk_size: int = 65536) -> str:
     h = hashlib.md5()
@@ -269,7 +400,9 @@ def hash_file(path: Path, chunk_size: int = 65536) -> str:
 
 
 def find_duplicates(target: Path) -> None:
-    print(f"\nScanning for duplicates in: {target}\n")
+    if RICH_AVAILABLE:
+        console.print(Rule("[yellow]Scanning for Duplicates[/yellow]", style="yellow"))
+        console.print()
 
     hash_map = {}
     scanned = 0
@@ -283,31 +416,47 @@ def find_duplicates(target: Path) -> None:
             except (PermissionError, OSError):
                 continue
 
-    duplicates = {h: paths for h, paths in hash_map.items() if len(paths) > 1}
+    duplicates = {h: p for h, p in hash_map.items() if len(p) > 1}
 
     if not duplicates:
-        print(f"  No duplicates found. ({scanned} files scanned)\n")
+        if RICH_AVAILABLE:
+            console.print(Panel(
+                f"[green]No duplicates found.[/green]\n[dim]{scanned} files scanned.[/dim]",
+                border_style="green", box=box.ROUNDED
+            ))
+        else:
+            print(f"No duplicates found. ({scanned} scanned)")
         return
 
     total_dupes = sum(len(p) - 1 for p in duplicates.values())
-    print(f"  Found {len(duplicates)} duplicate group(s), {total_dupes} redundant file(s):\n")
 
-    for i, (h, paths) in enumerate(duplicates.items(), 1):
-        print(f"  Group {i} (MD5: {h[:12]}...):")
-        for j, p in enumerate(paths):
-            label = "KEEP" if j == 0 else "DUPE"
-            rel = p.relative_to(target)
-            size_kb = p.stat().st_size / 1024
-            print(f"    [{label}] {rel}  ({size_kb:.1f} KB)")
-        print()
+    if RICH_AVAILABLE:
+        t = Table(box=box.SIMPLE, show_header=True, header_style="bold yellow")
+        t.add_column("Status", style="bold",  no_wrap=True)
+        t.add_column("File",   style="white")
+        t.add_column("Size",   style="dim", justify="right")
 
-    print(f"  Tip: Delete the [DUPE] files manually to free up space.\n")
+        for i, (h, paths) in enumerate(duplicates.items(), 1):
+            t.add_section()
+            for j, p in enumerate(paths):
+                rel   = p.relative_to(target)
+                size  = f"{p.stat().st_size/1024:.1f} KB"
+                label = "[green]KEEP[/green]" if j == 0 else "[red]DUPE[/red]"
+                t.add_row(label, str(rel), size)
+
+        console.print(Panel(t,
+            title=f"[bold yellow]Duplicates — {len(duplicates)} group(s), {total_dupes} redundant file(s)[/bold yellow]",
+            border_style="yellow", box=box.ROUNDED
+        ))
+        console.print("[dim]  Tip: Delete [red]DUPE[/red] files manually to free space.[/dim]")
+    else:
+        print(f"Found {len(duplicates)} group(s), {total_dupes} redundant files.")
 
 
-# ── Watch mode ────────────────────────────────────────────────────────────────
+# ── Watch ─────────────────────────────────────────────────────────────────────
 
 class FolderEventHandler(FileSystemEventHandler):
-    def __init__(self, target: Path, config: dict, logger: logging.Logger):
+    def __init__(self, target, config, logger):
         super().__init__()
         self.target = target
         self.config = config
@@ -324,20 +473,29 @@ class FolderEventHandler(FileSystemEventHandler):
 
 def watch_folder(target: Path, config: dict, logger: logging.Logger) -> None:
     if not WATCHDOG_AVAILABLE:
-        logger.error("watchdog not installed. Run: pip install watchdog")
+        if RICH_AVAILABLE:
+            console.print(Panel("[red]watchdog not installed. Run: pip install watchdog[/red]",
+                                border_style="red"))
         sys.exit(1)
 
-    handler = FolderEventHandler(target, config, logger)
+    if RICH_AVAILABLE:
+        console.print(Panel(
+            f"[green]Watching:[/green] {target}\n[dim]Press Ctrl+C to stop.[/dim]",
+            title="[bold green]Watch Mode[/bold green]",
+            border_style="green", box=box.ROUNDED
+        ))
+
+    handler  = FolderEventHandler(target, config, logger)
     observer = Observer()
     observer.schedule(handler, str(target), recursive=False)
     observer.start()
-    logger.info(f"Watching '{target}' for new files. Press Ctrl+C to stop.")
 
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        logger.info("Watch mode stopped by user.")
+        if RICH_AVAILABLE:
+            console.print("\n[yellow]Watch mode stopped.[/yellow]")
         observer.stop()
     observer.join()
 
@@ -346,7 +504,7 @@ def watch_folder(target: Path, config: dict, logger: logging.Logger) -> None:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Smart File Organizer — Sort, undo, find duplicates, and view stats.",
+        description="Smart File Organizer by Parth Korgaonkar — Sort, undo, find duplicates, view stats.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -358,24 +516,24 @@ Examples:
   python organizer.py --generate-config
         """
     )
-    parser.add_argument("folder", nargs="?", default=".",
+    parser.add_argument("folder",             nargs="?", default=".",
                         help="Target folder (default: current directory)")
-    parser.add_argument("--watch", "-w", action="store_true",
+    parser.add_argument("--watch",   "-w",    action="store_true",
                         help="Watch and auto-sort new files in real-time")
-    parser.add_argument("--undo", action="store_true",
+    parser.add_argument("--undo",             action="store_true",
                         help="Reverse the last sort session")
-    parser.add_argument("--stats", action="store_true",
+    parser.add_argument("--stats",            action="store_true",
                         help="Show file count per category")
-    parser.add_argument("--duplicates", action="store_true",
+    parser.add_argument("--duplicates",       action="store_true",
                         help="Find files with identical content")
-    parser.add_argument("--config", "-c", default="config.json",
+    parser.add_argument("--config",  "-c",    default="config.json",
                         help="Path to config JSON (default: config.json)")
-    parser.add_argument("--generate-config", action="store_true",
+    parser.add_argument("--generate-config",  action="store_true",
                         help="Generate default config.json and exit")
     return parser.parse_args()
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     args = parse_args()
@@ -387,19 +545,36 @@ def main():
         print(f"config.json written to {out.resolve()}")
         sys.exit(0)
 
+    # Validate target
     target = Path(args.folder).resolve()
     if not target.exists():
-        print(f"[ERROR] Folder not found: {target}")
+        if RICH_AVAILABLE:
+            console.print(f"[red][ERROR] Folder not found: {target}[/red]")
+        else:
+            print(f"[ERROR] Folder not found: {target}")
         sys.exit(1)
     if not target.is_dir():
-        print(f"[ERROR] Not a directory: {target}")
+        if RICH_AVAILABLE:
+            console.print(f"[red][ERROR] Not a directory: {target}[/red]")
+        else:
+            print(f"[ERROR] Not a directory: {target}")
         sys.exit(1)
 
+    # Safeguard
     script_dir = Path(__file__).resolve().parent
     if target == script_dir:
-        print("[ERROR] You are trying to organize the folder that contains organizer.py itself.")
-        print("        Run it on a different folder, e.g: python organizer.py ~/Downloads")
+        if RICH_AVAILABLE:
+            console.print(Panel(
+                "[red]You are trying to organize the folder that contains organizer.py itself.[/red]\n"
+                "[dim]Run it on a different folder:\n  python organizer.py ~/Downloads[/dim]",
+                title="[bold red]Error[/bold red]", border_style="red", box=box.ROUNDED
+            ))
+        else:
+            print("[ERROR] Cannot sort the script's own directory.")
         sys.exit(1)
+
+    # Print banner for all modes
+    print_banner()
 
     config_path = Path(args.config).resolve()
     config = load_config(config_path)
@@ -416,21 +591,26 @@ def main():
         undo_last_session(target, config)
         return
 
+    # Sort / Watch
     log_path = target / config.get("log_file", "organizer.log")
     write_session_marker(log_path)
     logger = setup_logger(log_path)
 
-    logger.info(f"Target folder: {target}")
-    logger.info(f"Config: {config_path if config_path.exists() else 'defaults'}")
+    if RICH_AVAILABLE:
+        console.print(f"  [dim]Target:[/dim] [white]{target}[/white]")
+        console.print(f"  [dim]Config:[/dim] [white]{config_path if config_path.exists() else 'defaults'}[/white]")
+        console.print()
 
     if args.watch:
-        logger.info("Sorting existing files before entering watch mode...")
         sort_folder(target, config, logger)
         watch_folder(target, config, logger)
     else:
-        stats = sort_folder(target, config, logger)
-        if stats:
-            logger.info("Stats: " + ", ".join(f"{k}: {v}" for k, v in sorted(stats.items())))
+        sort_folder(target, config, logger)
+
+    # Show commands hint at end
+    if RICH_AVAILABLE:
+        console.print()
+        print_commands()
 
 
 if __name__ == "__main__":
