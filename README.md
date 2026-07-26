@@ -28,7 +28,7 @@ Drop it on your Downloads, Desktop, or any folder — it handles the rest.
 
 ### 🪟 Windows
 
-| Before (213 files) | After (sorted) |
+| Before (210 files) | After (sorted) |
 |---|---|
 | ![Windows Before](screenshots/windows_before.png) | ![Windows After](screenshots/windows_after.png) |
 
