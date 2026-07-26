@@ -254,7 +254,7 @@ python3 organizer.py ~/Downloads
 
 # Android (Termux)
 python organizer.py /sdcard/Download
-```
+```#Basically, paste the path of your folder
 
 ### Watch mode — auto-sort new files in real time
 ```bash
